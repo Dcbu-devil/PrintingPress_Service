@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Agent, Order
+from app.models import Agent, Order, CommissionPayment
 from app.schemas import OrderCreate, OrderResponse
 from app.commission import calculate_commission
 
@@ -17,6 +17,74 @@ router = APIRouter(prefix="/api/orders", tags=["Orders"])
 @router.get("/", response_model=list[OrderResponse])
 def get_orders(db: Session = Depends(get_db)):
     return db.query(Order).order_by(Order.id.desc()).all()
+
+
+# =========================
+# PAYMENT ID GENERATOR
+# =========================
+
+def generate_payment_id(db: Session, extra_count: int = 0):
+    """
+    Generates payment IDs like:
+    PAY-1001, PAY-1002, PAY-1003
+
+    extra_count is used because one job can create multiple payment rows:
+    Direct Member, Parent Member, Grandparent Member.
+    """
+
+    payment_count = db.query(CommissionPayment).count()
+    return f"PAY-{1001 + payment_count + extra_count}"
+
+
+# =========================
+# CREATE COMMISSION PAYMENT RECORD
+# =========================
+
+def create_commission_payment(
+    db: Session,
+    payment_id: str,
+    order: Order,
+    agent: Agent,
+    agent_role: str,
+    commission_amount: float,
+):
+    """
+    This creates one company-to-member payment record.
+
+    Example:
+    Job ORD-1001 gives:
+    Ravi = Direct Member = ₹925
+    Amit = Parent Member = ₹50
+    Raj = Grandparent Member = ₹25
+
+    So this function is called once for each member who should receive commission.
+    """
+
+    commission_amount = float(commission_amount or 0)
+
+    payment = CommissionPayment(
+        payment_id=payment_id,
+
+        order_db_id=order.id,
+        order_id=order.order_id,
+
+        agent_id=agent.id,
+        agent_name=agent.name,
+        agent_role=agent_role,
+
+        commission_amount=commission_amount,
+        paid_amount=0,
+        pending_amount=commission_amount,
+
+        payment_status="Pending",
+        payment_date=None,
+        payment_method=None,
+
+        created_date=str(date.today()),
+        updated_date=str(date.today()),
+    )
+
+    db.add(payment)
 
 
 # =========================
@@ -86,7 +154,7 @@ def create_order(order_data: OrderCreate, db: Session = Depends(get_db)):
     # =========================
     # COMMISSION CALCULATION
     # =========================
-    # Commission is still calculated from printing_cost.
+    # Commission is calculated from printing_cost.
 
     commission = calculate_commission(
         printing_cost=order_data.printing_cost,
@@ -148,7 +216,7 @@ def create_order(order_data: OrderCreate, db: Session = Depends(get_db)):
     )
 
     # =========================
-    # UPDATE DIRECT MEMBER TOTALS
+    # UPDATE MEMBER COMMISSION TOTALS
     # =========================
 
     direct_agent.total_orders += 1
@@ -161,7 +229,80 @@ def create_order(order_data: OrderCreate, db: Session = Depends(get_db)):
     if grandparent_agent:
         grandparent_agent.total_commission += commission["grandparent_commission"]
 
+    # =========================
+    # SAVE ORDER FIRST
+    # =========================
+    # db.flush() gives us order.id before final commit.
+    # We need order.id for commission_payments.order_db_id.
+
     db.add(order)
+    db.flush()
+
+    # =========================
+    # CREATE COMMISSION PAYMENT RECORDS
+    # =========================
+    # Correct payment architecture:
+    # Payment module = Company pays commission to members/agents.
+    #
+    # One job can create:
+    # 1. Direct Member payment
+    # 2. Parent Member payment
+    # 3. Grandparent Member payment
+
+    payment_extra_count = 0
+
+    direct_commission_amount = float(
+        commission["final_direct_agent_commission"] or 0
+    )
+
+    if direct_commission_amount > 0:
+        create_commission_payment(
+            db=db,
+            payment_id=generate_payment_id(db, payment_extra_count),
+            order=order,
+            agent=direct_agent,
+            agent_role="Direct Member",
+            commission_amount=direct_commission_amount,
+        )
+
+        payment_extra_count += 1
+
+    parent_commission_amount = float(
+        commission["parent_commission"] or 0
+    )
+
+    if parent_agent and parent_commission_amount > 0:
+        create_commission_payment(
+            db=db,
+            payment_id=generate_payment_id(db, payment_extra_count),
+            order=order,
+            agent=parent_agent,
+            agent_role="Parent Member",
+            commission_amount=parent_commission_amount,
+        )
+
+        payment_extra_count += 1
+
+    grandparent_commission_amount = float(
+        commission["grandparent_commission"] or 0
+    )
+
+    if grandparent_agent and grandparent_commission_amount > 0:
+        create_commission_payment(
+            db=db,
+            payment_id=generate_payment_id(db, payment_extra_count),
+            order=order,
+            agent=grandparent_agent,
+            agent_role="Grandparent Member",
+            commission_amount=grandparent_commission_amount,
+        )
+
+        payment_extra_count += 1
+
+    # =========================
+    # FINAL SAVE
+    # =========================
+
     db.commit()
     db.refresh(order)
 
