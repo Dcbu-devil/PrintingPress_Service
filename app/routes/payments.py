@@ -6,16 +6,60 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Agent, Order, CommissionPayment
 from app.schemas import CommissionPaymentResponse, CommissionPaymentUpdate
+from app.auth import require_roles
 
 
-router = APIRouter(prefix="/api/payments", tags=["Payments"])
+# ============================================================
+# PAYMENTS ROUTER
+# ============================================================
+# Purpose:
+# This file handles company-to-member commission payments.
+#
+# Payment module meaning:
+# Company pays commission to members/agents.
+#
+# Example:
+# Job ORD-1001 can create payment records like:
+#
+# PAY-1001 -> Direct Member       -> ₹925
+# PAY-1002 -> Parent Member       -> ₹50
+# PAY-1003 -> Grandparent Member  -> ₹25
+#
+# Important:
+# This route is now protected with JWT role permissions.
+#
+# Permission rules:
+# 1. super_admin and admin can view payments.
+# 2. Only super_admin can pay commission.
+# 3. Only super_admin can revert payment.
+# 4. Only super_admin can run old-job backfill.
+
+router = APIRouter(
+    prefix="/api/payments",
+    tags=["Payments"],
+)
 
 
-# =========================
-# HELPER FUNCTIONS
-# =========================
+# ============================================================
+# HELPER: CALCULATE PAYMENT STATUS
+# ============================================================
+# Purpose:
+# Decides payment status based on paid amount.
+#
+# Rules:
+# paid_amount <= 0
+#   -> Pending
+#
+# paid_amount > 0 and paid_amount < commission_amount
+#   -> Partial
+#
+# paid_amount == commission_amount
+#   -> Paid
 
-def calculate_payment_status(commission_amount: float, paid_amount: float):
+def calculate_payment_status(
+    commission_amount: float,
+    paid_amount: float,
+):
     commission_amount = float(commission_amount or 0)
     paid_amount = float(paid_amount or 0)
 
@@ -28,10 +72,44 @@ def calculate_payment_status(commission_amount: float, paid_amount: float):
     return "Paid"
 
 
-def generate_payment_id(db: Session, extra_count: int = 0):
+# ============================================================
+# HELPER: GENERATE PAYMENT ID
+# ============================================================
+# Purpose:
+# Generates public payment id like:
+#
+# PAY-1001
+# PAY-1002
+# PAY-1003
+#
+# Note:
+# This is okay for current MVP.
+# Later for production with many users, improve this using:
+# - database sequence
+# - UUID
+# - safer retry logic
+
+def generate_payment_id(
+    db: Session,
+    extra_count: int = 0,
+):
     payment_count = db.query(CommissionPayment).count()
     return f"PAY-{1001 + payment_count + extra_count}"
 
+
+# ============================================================
+# HELPER: CREATE PAYMENT IF NOT EXISTS
+# ============================================================
+# Purpose:
+# Used by backfill API.
+#
+# This creates missing payment records for old jobs that were created
+# before the commission_payments table/module existed.
+#
+# It prevents duplicate payment records by checking:
+# - order_db_id
+# - agent_id
+# - agent_role
 
 def create_payment_if_not_exists(
     db: Session,
@@ -43,9 +121,11 @@ def create_payment_if_not_exists(
 ):
     commission_amount = float(commission_amount or 0)
 
+    # Do not create zero or negative commission payment.
     if commission_amount <= 0:
         return False
 
+    # Check if this payment record already exists.
     existing_payment = (
         db.query(CommissionPayment)
         .filter(
@@ -62,21 +142,26 @@ def create_payment_if_not_exists(
     payment = CommissionPayment(
         payment_id=generate_payment_id(db, extra_count),
 
+        # Job/order reference
         order_db_id=order.id,
         order_id=order.order_id,
 
+        # Member/agent receiving commission
         agent_id=agent.id,
         agent_name=agent.name,
         agent_role=agent_role,
 
+        # Payment amount details
         commission_amount=commission_amount,
         paid_amount=0,
         pending_amount=commission_amount,
 
+        # Payment status details
         payment_status="Pending",
         payment_date=None,
         payment_method=None,
 
+        # Date tracking
         created_date=str(date.today()),
         updated_date=str(date.today()),
     )
@@ -86,12 +171,31 @@ def create_payment_if_not_exists(
     return True
 
 
-# =========================
+# ============================================================
 # GET ALL COMMISSION PAYMENTS
-# =========================
+# ============================================================
+# URL:
+# GET /api/payments/
+#
+# Permission:
+# super_admin, admin
+#
+# Purpose:
+# Returns all commission payment records.
+#
+# Used by:
+# Frontend Payments page.
 
-@router.get("/", response_model=list[CommissionPaymentResponse])
-def get_payments(db: Session = Depends(get_db)):
+@router.get(
+    "/",
+    response_model=list[CommissionPaymentResponse],
+    dependencies=[
+        Depends(require_roles(["super_admin", "admin"]))
+    ],
+)
+def get_payments(
+    db: Session = Depends(get_db),
+):
     payments = (
         db.query(CommissionPayment)
         .order_by(CommissionPayment.id.desc())
@@ -101,23 +205,43 @@ def get_payments(db: Session = Depends(get_db)):
     return payments
 
 
-# =========================
+# ============================================================
 # BACKFILL OLD JOBS
-# =========================
+# ============================================================
+# URL:
+# POST /api/payments/backfill-missing
+#
+# Permission:
+# super_admin only
+#
+# Purpose:
 # This fixes old jobs created before commission_payments table existed.
 #
-# Run this once from Swagger:
-# POST /api/payments/backfill-missing
+# Use case:
+# You already have jobs/orders in orders table,
+# but payment page shows no commission rows.
+#
+# This API reads old jobs and creates missing payment records.
 
-@router.post("/backfill-missing")
-def backfill_missing_commission_payments(db: Session = Depends(get_db)):
+@router.post(
+    "/backfill-missing",
+    dependencies=[
+        Depends(require_roles(["super_admin"]))
+    ],
+)
+def backfill_missing_commission_payments(
+    db: Session = Depends(get_db),
+):
     orders = db.query(Order).order_by(Order.id.asc()).all()
 
     created_count = 0
     extra_count = 0
 
     for order in orders:
-        # Direct member payment
+        # ====================================================
+        # DIRECT MEMBER PAYMENT
+        # ====================================================
+
         if order.direct_agent_id:
             direct_agent = (
                 db.query(Agent)
@@ -139,7 +263,10 @@ def backfill_missing_commission_payments(db: Session = Depends(get_db)):
                     created_count += 1
                     extra_count += 1
 
-        # Parent member payment
+        # ====================================================
+        # PARENT MEMBER PAYMENT
+        # ====================================================
+
         if order.parent_agent_id and float(order.parent_commission or 0) > 0:
             parent_agent = (
                 db.query(Agent)
@@ -161,7 +288,10 @@ def backfill_missing_commission_payments(db: Session = Depends(get_db)):
                     created_count += 1
                     extra_count += 1
 
-        # Grandparent member payment
+        # ====================================================
+        # GRANDPARENT MEMBER PAYMENT
+        # ====================================================
+
         if (
             order.grandparent_agent_id
             and float(order.grandparent_commission or 0) > 0
@@ -195,11 +325,42 @@ def backfill_missing_commission_payments(db: Session = Depends(get_db)):
     }
 
 
-# =========================
+# ============================================================
 # UPDATE COMMISSION PAYMENT
-# =========================
+# ============================================================
+# URL:
+# PUT /api/payments/{payment_id}/pay
+#
+# Permission:
+# super_admin only
+#
+# Request body:
+# {
+#   "paid_amount": 500,
+#   "payment_method": "Company Payment"
+# }
+#
+# Rules:
+# paid_amount cannot be negative.
+# paid_amount cannot exceed commission_amount.
+#
+# Status update:
+# paid_amount = 0
+#   -> Pending
+#
+# paid_amount < commission_amount
+#   -> Partial
+#
+# paid_amount == commission_amount
+#   -> Paid
 
-@router.put("/{payment_id}/pay", response_model=CommissionPaymentResponse)
+@router.put(
+    "/{payment_id}/pay",
+    response_model=CommissionPaymentResponse,
+    dependencies=[
+        Depends(require_roles(["super_admin"]))
+    ],
+)
 def update_payment(
     payment_id: int,
     payment_data: CommissionPaymentUpdate,
@@ -214,22 +375,24 @@ def update_payment(
     if not payment:
         raise HTTPException(
             status_code=404,
-            detail="Payment record not found"
+            detail="Payment record not found",
         )
 
     commission_amount = float(payment.commission_amount or 0)
     paid_amount = float(payment_data.paid_amount or 0)
 
+    # Prevent negative payment.
     if paid_amount < 0:
         raise HTTPException(
             status_code=400,
-            detail="Paid amount cannot be negative"
+            detail="Paid amount cannot be negative",
         )
 
+    # Prevent overpayment.
     if paid_amount > commission_amount:
         raise HTTPException(
             status_code=400,
-            detail=f"Paid amount cannot exceed commission amount ₹{commission_amount}"
+            detail=f"Paid amount cannot exceed commission amount ₹{commission_amount}",
         )
 
     pending_amount = commission_amount - paid_amount
@@ -256,11 +419,32 @@ def update_payment(
     return payment
 
 
-# =========================
+# ============================================================
 # REVERT COMMISSION PAYMENT
-# =========================
+# ============================================================
+# URL:
+# PUT /api/payments/{payment_id}/revert
+#
+# Permission:
+# super_admin only
+#
+# Purpose:
+# Resets a payment record back to unpaid state.
+#
+# It sets:
+# paid_amount = 0
+# pending_amount = commission_amount
+# payment_status = Pending
+# payment_date = None
+# payment_method = None
 
-@router.put("/{payment_id}/revert", response_model=CommissionPaymentResponse)
+@router.put(
+    "/{payment_id}/revert",
+    response_model=CommissionPaymentResponse,
+    dependencies=[
+        Depends(require_roles(["super_admin"]))
+    ],
+)
 def revert_payment(
     payment_id: int,
     db: Session = Depends(get_db),
@@ -274,7 +458,7 @@ def revert_payment(
     if not payment:
         raise HTTPException(
             status_code=404,
-            detail="Payment record not found"
+            detail="Payment record not found",
         )
 
     commission_amount = float(payment.commission_amount or 0)
@@ -292,11 +476,25 @@ def revert_payment(
     return payment
 
 
-# =========================
+# ============================================================
 # GET SINGLE PAYMENT RECORD
-# =========================
+# ============================================================
+# URL:
+# GET /api/payments/{payment_id}
+#
+# Permission:
+# super_admin, admin
+#
+# Purpose:
+# Returns one commission payment record by database ID.
 
-@router.get("/{payment_id}", response_model=CommissionPaymentResponse)
+@router.get(
+    "/{payment_id}",
+    response_model=CommissionPaymentResponse,
+    dependencies=[
+        Depends(require_roles(["super_admin", "admin"]))
+    ],
+)
 def get_single_payment(
     payment_id: int,
     db: Session = Depends(get_db),
@@ -310,7 +508,7 @@ def get_single_payment(
     if not payment:
         raise HTTPException(
             status_code=404,
-            detail="Payment record not found"
+            detail="Payment record not found",
         )
 
     return payment
