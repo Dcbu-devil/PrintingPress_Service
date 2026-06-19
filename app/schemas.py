@@ -386,6 +386,9 @@ class UserResponse(BaseModel):
     # Active / Inactive / Blocked
     status: str
 
+    #Reset Password
+    must_reset_password: bool  
+
     class Config:
         from_attributes = True
 
@@ -429,3 +432,30 @@ class DashboardSummary(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+class ResetPasswordRequest(BaseModel):
+    # New plain password.
+    # Backend will hash it before saving.
+    new_password: str
+
+
+class OrderCostingUpdate(BaseModel):
+    paper_amount: float = 0
+    plate_amount: float = 0
+    printing_amount: float = 0
+    lamination_amount: float = 0
+    binding_amount: float = 0
+
+
+class NotificationResponse(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    title: str
+    message: str
+    is_read: bool
+    created_date: Optional[str] = None
+    order_id: Optional[int] = None
+
+    class Config:
+        from_attributes = True

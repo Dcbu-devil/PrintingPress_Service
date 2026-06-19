@@ -7,6 +7,7 @@ from app.database import get_db
 from app.models import Agent, Order, CommissionPayment
 from app.schemas import CommissionPaymentResponse, CommissionPaymentUpdate
 from app.auth import require_roles
+from app.utils import generate_payment_id
 
 
 # ============================================================
@@ -72,29 +73,7 @@ def calculate_payment_status(
     return "Paid"
 
 
-# ============================================================
-# HELPER: GENERATE PAYMENT ID
-# ============================================================
-# Purpose:
-# Generates public payment id like:
-#
-# PAY-1001
-# PAY-1002
-# PAY-1003
-#
-# Note:
-# This is okay for current MVP.
-# Later for production with many users, improve this using:
-# - database sequence
-# - UUID
-# - safer retry logic
-
-def generate_payment_id(
-    db: Session,
-    extra_count: int = 0,
-):
-    payment_count = db.query(CommissionPayment).count()
-    return f"PAY-{1001 + payment_count + extra_count}"
+# Payment ID generation has been moved to app/utils.py
 
 
 # ============================================================
@@ -204,6 +183,37 @@ def get_payments(
 
     return payments
 
+# ============================================================
+# GET MY COMMISSION PAYMENTS
+# ============================================================
+# URL:
+# GET /api/payments/my
+#
+# Permission:
+# agent
+#
+# Purpose:
+# Agent/member can view only own commission payment records.
+
+@router.get(
+    "/my",
+    response_model=list[CommissionPaymentResponse],
+)
+def get_my_payments(
+    current_user=Depends(require_roles(["agent"])),
+    db: Session = Depends(get_db),
+):
+    if not current_user.agent_id:
+        return []
+
+    payments = (
+        db.query(CommissionPayment)
+        .filter(CommissionPayment.agent_id == current_user.agent_id)
+        .order_by(CommissionPayment.id.desc())
+        .all()
+    )
+
+    return payments
 
 # ============================================================
 # BACKFILL OLD JOBS

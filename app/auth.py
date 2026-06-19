@@ -1,86 +1,31 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, HTTPException, status, Request
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import User
+from app.config import settings
 
 
 # ============================================================
-# AUTHENTICATION AND AUTHORIZATION FILE
+# AUTH CONFIG
 # ============================================================
-# Purpose:
-# This file handles all backend authentication and permission logic.
-#
-# It provides:
-# 1. Password hashing
-# 2. Password verification
-# 3. JWT access token creation
-# 4. Current logged-in user detection
-# 5. Role-based permission checking
-#
-# Used by:
-# - auth.py route for login
-# - agents.py for member access protection
-# - orders.py for job access protection
-# - payments.py for payment access protection
-
-
-# ============================================================
-# JWT CONFIGURATION
-# ============================================================
-# SECRET_KEY:
-# This is used to sign JWT tokens.
-#
 # Important:
-# In production, do not keep this hardcoded.
-# Later move this value into .env file.
-#
-# Example later:
-# SECRET_KEY = settings.SECRET_KEY
+# SECRET_KEY is not hardcoded here.
+# It comes from .env through app/config.py
 
-SECRET_KEY = "change-this-secret-key-later"
-
-
-# JWT signing algorithm.
-# HS256 is commonly used for simple JWT authentication.
-ALGORITHM = "HS256"
-
-
-# Token expiry time.
-# 60 * 24 = 1440 minutes = 1 day.
-#
-# Meaning:
-# User login token will be valid for 1 day.
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
 
 # ============================================================
-# PASSWORD HASHING CONFIGURATION
+# PASSWORD HASHING CONFIG
 # ============================================================
-# We use passlib with bcrypt.
-#
-# Why hashing is needed:
-# Never store plain passwords in database.
-#
-# Example:
-# User password: admin123
-#
-# Database should not store:
-# admin123
-#
-# Database should store hashed value like:
-# $2b$12$xxxxxx...
-#
-# During login:
-# - User types plain password
-# - We compare it with hashed password
-# - If match, login success
 
 pwd_context = CryptContext(
     schemes=["bcrypt"],
@@ -88,44 +33,14 @@ pwd_context = CryptContext(
 )
 
 
-# ============================================================
-# HASH PASSWORD
-# ============================================================
-# Purpose:
-# Converts plain password into secure hashed password.
-#
-# Used when:
-# - Creating Super Admin
-# - Creating Admin
-# - Creating Agent login
-#
-# Example:
-# hash_password("admin123")
-# returns bcrypt hashed password
-
-def hash_password(password: str) -> str:
+def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-# ============================================================
-# VERIFY PASSWORD
-# ============================================================
-# Purpose:
-# Checks whether plain password matches hashed password.
-#
-# Used during login.
-#
-# Example:
-# plain_password = "admin123"
-# hashed_password = "$2b$12$..."
-#
-# If correct:
-# returns True
-#
-# If wrong:
-# returns False
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
+def verify_password(
+    plain_password: str,
+    hashed_password: str,
+) -> bool:
     return pwd_context.verify(
         plain_password,
         hashed_password,
@@ -133,51 +48,28 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 # ============================================================
-# CREATE JWT ACCESS TOKEN
+# JWT TOKEN CREATION
 # ============================================================
-# Purpose:
-# Creates a signed JWT token after successful login.
-#
-# Token contains user information like:
-# - user id
-# - email
-# - role
-# - expiry time
-#
-# Important:
-# Do not store sensitive data like password inside token.
-#
-# Example payload:
-# {
-#   "sub": "1",
-#   "email": "super@admin.com",
-#   "role": "super_admin",
-#   "exp": expiry_time
-# }
 
 def create_access_token(
     data: dict,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
-    # Copy original data so original dictionary is not modified.
     to_encode = data.copy()
 
-    # Set token expiry time.
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(
+        expire = datetime.now(timezone.utc) + timedelta(
             minutes=ACCESS_TOKEN_EXPIRE_MINUTES
         )
 
-    # Add expiry time into token payload.
     to_encode.update(
         {
             "exp": expire,
         }
     )
 
-    # Create signed JWT token.
     encoded_jwt = jwt.encode(
         to_encode,
         SECRET_KEY,
@@ -188,67 +80,62 @@ def create_access_token(
 
 
 # ============================================================
-# OAUTH2 TOKEN READER
+# USER ROLE HELPER
 # ============================================================
-# Purpose:
-# Reads Bearer token from request header.
-#
-# Frontend will send token like:
-#
-# Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
-#
-# OAuth2PasswordBearer automatically extracts the token.
-#
-# tokenUrl is only for Swagger UI.
-# It tells Swagger where login happens.
 
-bearer_scheme = HTTPBearer()
+def get_user_role(user: User) -> Optional[str]:
+    if not user or not user.role:
+        return None
+
+    if hasattr(user.role, "name"):
+        return user.role.name
+
+    if hasattr(user.role, "role_name"):
+        return user.role.role_name
+
+    return None
+
 
 # ============================================================
-# GET CURRENT LOGGED-IN USER
+# GET CURRENT LOGGED-IN USER FROM COOKIE
 # ============================================================
-# Purpose:
-# Reads JWT token, verifies it, and returns current user from database.
-#
-# Used in protected APIs.
-#
-# Example:
-# current_user: User = Depends(get_current_user)
-#
-# If token is valid:
-# returns User object
-#
-# If token is missing/invalid/expired:
-# raises 401 Unauthorized
+# Cookie-based auth:
+# Frontend does not store token in localStorage.
+# Browser sends HttpOnly cookie automatically.
+# Backend reads JWT from access_token cookie.
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    request: Request,
     db: Session = Depends(get_db),
-) -> User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or expired token",
-        headers={
-            "WWW-Authenticate": "Bearer",
-        },
-    )
+):
+    token = request.cookies.get("access_token")
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
 
     try:
-        token = credentials.credentials
-
         payload = jwt.decode(
             token,
             SECRET_KEY,
             algorithms=[ALGORITHM],
         )
 
-        user_id = payload.get("sub")
+        user_id: str = payload.get("sub")
 
         if user_id is None:
-            raise credentials_exception
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authentication token",
+            )
 
     except JWTError:
-        raise credentials_exception
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+        )
 
     user = (
         db.query(User)
@@ -257,7 +144,10 @@ def get_current_user(
     )
 
     if not user:
-        raise credentials_exception
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
 
     if user.status != "Active":
         raise HTTPException(
@@ -269,39 +159,15 @@ def get_current_user(
 
 
 # ============================================================
-# ROLE-BASED PERMISSION CHECKER
+# ROLE-BASED ACCESS CONTROL
 # ============================================================
-# Purpose:
-# Allows only selected roles to access specific APIs.
-#
-# Example:
-#
-# @router.put(
-#     "/{payment_id}/pay",
-#     dependencies=[Depends(require_roles(["super_admin"]))]
-# )
-#
-# Meaning:
-# Only super_admin can pay commission.
-#
-# Another example:
-#
-# Depends(require_roles(["super_admin", "admin"]))
-#
-# Meaning:
-# super_admin and admin can access.
-#
-# If user role is not allowed:
-# returns 403 Forbidden.
 
 def require_roles(allowed_roles: list[str]):
     def role_checker(
         current_user: User = Depends(get_current_user),
     ) -> User:
-        # Get role name from related Role table.
-        user_role = current_user.role.name if current_user.role else None
+        user_role = get_user_role(current_user)
 
-        # Check role permission.
         if user_role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -311,19 +177,3 @@ def require_roles(allowed_roles: list[str]):
         return current_user
 
     return role_checker
-
-
-# ============================================================
-# OPTIONAL HELPER: GET USER ROLE NAME
-# ============================================================
-# Purpose:
-# Safely return current user's role name.
-#
-# Useful in routes where you need:
-# current_user_role = get_user_role(current_user)
-
-def get_user_role(user: User) -> Optional[str]:
-    if not user or not user.role:
-        return None
-
-    return user.role.name

@@ -1,13 +1,14 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Agent, Order, CommissionPayment
-from app.schemas import OrderCreate, OrderResponse
+from app.models import Agent, Order, CommissionPayment, Notification, User
+from app.schemas import OrderCreate, OrderResponse, OrderCostingUpdate
 from app.commission import calculate_commission
-from app.auth import require_roles
+from app.auth import require_roles, get_current_user
+from app.utils import generate_order_id, generate_payment_id
 
 
 # ============================================================
@@ -59,44 +60,63 @@ router = APIRouter(
 @router.get(
     "/",
     response_model=list[OrderResponse],
-    dependencies=[
-        Depends(require_roles(["super_admin", "admin", "agent"]))
-    ],
 )
 def get_orders(
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if current_user.role.name == "agent":
+        if not current_user.agent_id:
+            return []
+        agent_id = current_user.agent_id
+        return (
+            db.query(Order)
+            .filter(
+                (Order.direct_agent_id == agent_id)
+                | (Order.parent_agent_id == agent_id)
+                | (Order.grandparent_agent_id == agent_id)
+            )
+            .order_by(Order.id.desc())
+            .all()
+        )
     return db.query(Order).order_by(Order.id.desc()).all()
 
-
 # ============================================================
-# HELPER: GENERATE PAYMENT ID
+# GET MY JOBS / ORDERS
 # ============================================================
+# URL:
+# GET /api/orders/my
+#
+# Permission:
+# agent
+#
 # Purpose:
-# Generates payment IDs like:
-#
-# PAY-1001
-# PAY-1002
-# PAY-1003
-#
-# Why extra_count is used:
-# One job can create multiple commission payment rows:
-# 1. Direct Member
-# 2. Parent Member
-# 3. Grandparent Member
-#
-# Current MVP:
-# Uses count-based ID generation.
-#
-# Later production improvement:
-# Use database sequence / UUID / safe retry logic.
+# Agent/member can view only own jobs.
 
-def generate_payment_id(
-    db: Session,
-    extra_count: int = 0,
+@router.get(
+    "/my",
+    response_model=list[OrderResponse],
+)
+def get_my_orders(
+    current_user: User = Depends(require_roles(["agent"])),
+    db: Session = Depends(get_db),
 ):
-    payment_count = db.query(CommissionPayment).count()
-    return f"PAY-{1001 + payment_count + extra_count}"
+    if not current_user.agent_id:
+        return []
+
+    agent_id = current_user.agent_id
+    return (
+        db.query(Order)
+        .filter(
+            (Order.direct_agent_id == agent_id)
+            | (Order.parent_agent_id == agent_id)
+            | (Order.grandparent_agent_id == agent_id)
+        )
+        .order_by(Order.id.desc())
+        .all()
+    )
+
+# Payment ID generation has been moved to app/utils.py
 
 
 # ============================================================
@@ -184,14 +204,27 @@ def create_commission_payment(
 @router.post(
     "/",
     response_model=OrderResponse,
-    dependencies=[
-        Depends(require_roles(["super_admin", "admin"]))
-    ],
 )
 def create_order(
     order_data: OrderCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles(["super_admin", "admin", "agent"])),
 ):
+    is_agent = current_user.role.name == "agent"
+    if is_agent:
+        if not current_user.agent_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Agent user has no connected agent/member profile",
+            )
+        order_data.direct_agent_id = current_user.agent_id
+        order_data.paper_amount = 0
+        order_data.plate_amount = 0
+        order_data.printing_amount = 0
+        order_data.lamination_amount = 0
+        order_data.binding_amount = 0
+        order_data.printing_cost = 0
+
     # ========================================================
     # FIND DIRECT MEMBER / AGENT
     # ========================================================
@@ -255,6 +288,9 @@ def create_order(
         + binding_amount
     )
 
+    # Note: total_amount equals requirement_total_amount by design.
+    # The quantity and unit_price fields are stored as order metadata
+    # but are not used in this total calculation.
     total_amount = requirement_total_amount
 
     # ========================================================
@@ -279,13 +315,8 @@ def create_order(
     # ========================================================
     # GENERATE JOB / ORDER ID
     # ========================================================
-    # Current MVP uses count-based ID.
-    #
-    # Later production improvement:
-    # Replace this with database sequence / UUID.
 
-    order_count = db.query(Order).count() + 1
-    order_id = f"ORD-{1000 + order_count}"
+    order_id = generate_order_id(db)
 
     # ========================================================
     # CREATE JOB / ORDER OBJECT
@@ -441,6 +472,18 @@ def create_order(
     db.commit()
     db.refresh(order)
 
+    if is_agent:
+        notification = Notification(
+            user_id=None,
+            title="New Costing Request",
+            message=f"Agent {current_user.name} created job {order.order_id} ({order.product_name}). Please enter costing.",
+            is_read=False,
+            created_date=str(date.today()),
+            order_id=order.id,
+        )
+        db.add(notification)
+        db.commit()
+
     return order
 
 
@@ -472,7 +515,7 @@ def create_order(
 )
 def update_order_status(
     order_id: int,
-    status_data: dict,
+    status_data: dict = Body(...),
     db: Session = Depends(get_db),
 ):
     order = db.query(Order).filter(Order.id == order_id).first()
@@ -499,3 +542,291 @@ def update_order_status(
     db.refresh(order)
 
     return order
+
+
+# ============================================================
+# DELETE JOB / ORDER
+# ============================================================
+# URL:
+# DELETE /api/orders/{order_id}
+#
+# Permission:
+# super_admin, admin
+
+@router.delete(
+    "/{order_id}",
+    dependencies=[
+        Depends(require_roles(["super_admin", "admin"]))
+    ],
+)
+def delete_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+):
+    order = db.query(Order).filter(Order.id == order_id).first()
+
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found",
+        )
+
+    # Revert Agent totals
+    direct_agent = db.query(Agent).filter(Agent.id == order.direct_agent_id).first()
+    if direct_agent:
+        direct_agent.total_orders = max(0, direct_agent.total_orders - 1)
+        direct_agent.total_commission = max(0.0, direct_agent.total_commission - (order.final_direct_agent_commission or 0))
+        direct_agent.printing_revenue = max(0.0, direct_agent.printing_revenue - (order.printing_cost or 0))
+
+    if order.parent_agent_id:
+        parent_agent = db.query(Agent).filter(Agent.id == order.parent_agent_id).first()
+        if parent_agent:
+            parent_agent.total_commission = max(0.0, parent_agent.total_commission - (order.parent_commission or 0))
+
+    if order.grandparent_agent_id:
+        grandparent_agent = db.query(Agent).filter(Agent.id == order.grandparent_agent_id).first()
+        if grandparent_agent:
+            grandparent_agent.total_commission = max(0.0, grandparent_agent.total_commission - (order.grandparent_commission or 0))
+
+    # Delete commission payment records
+    db.query(CommissionPayment).filter(CommissionPayment.order_db_id == order.id).delete(synchronize_session=False)
+
+    # Delete order
+    db.delete(order)
+    db.commit()
+
+    return {"message": "Job and associated payments deleted successfully", "deleted_order_id": order_id}
+
+
+# ============================================================
+# COSTING RECALCULATION & PAYMENTS HELPERS
+# ============================================================
+
+from app.routes.payments import calculate_payment_status
+
+def update_or_create_commission_payment(
+    db: Session,
+    order: Order,
+    agent: Agent,
+    agent_role: str,
+    commission_amount: float,
+    extra_count: int,
+):
+    payment = (
+        db.query(CommissionPayment)
+        .filter(
+            CommissionPayment.order_db_id == order.id,
+            CommissionPayment.agent_id == agent.id,
+            CommissionPayment.agent_role == agent_role,
+        )
+        .first()
+    )
+
+    if payment:
+        payment.commission_amount = commission_amount
+        payment.pending_amount = commission_amount - payment.paid_amount
+        payment.payment_status = calculate_payment_status(
+            commission_amount=commission_amount,
+            paid_amount=payment.paid_amount,
+        )
+        payment.updated_date = str(date.today())
+    elif commission_amount > 0:
+        create_commission_payment(
+            db=db,
+            payment_id=generate_payment_id(db, extra_count),
+            order=order,
+            agent=agent,
+            agent_role=agent_role,
+            commission_amount=commission_amount,
+        )
+        return True
+    return False
+
+
+# ============================================================
+# UPDATE JOB / ORDER COSTING
+# ============================================================
+# URL:
+# PUT /api/orders/{order_id}/costing
+
+@router.put(
+    "/{order_id}/costing",
+    response_model=OrderResponse,
+    dependencies=[Depends(require_roles(["super_admin", "admin"]))],
+)
+def update_order_costing(
+    order_id: int,
+    costing_data: OrderCostingUpdate,
+    db: Session = Depends(get_db),
+):
+    order = db.query(Order).filter(Order.id == order_id).first()
+
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found",
+        )
+
+    # 1. Revert old commission from Agent totals
+    direct_agent = db.query(Agent).filter(Agent.id == order.direct_agent_id).first()
+    if direct_agent:
+        direct_agent.total_commission = max(
+            0.0,
+            direct_agent.total_commission - (order.final_direct_agent_commission or 0)
+        )
+        direct_agent.printing_revenue = max(
+            0.0,
+            direct_agent.printing_revenue - (order.printing_cost or 0)
+        )
+
+    parent_agent = None
+    if order.parent_agent_id:
+        parent_agent = db.query(Agent).filter(Agent.id == order.parent_agent_id).first()
+        if parent_agent:
+            parent_agent.total_commission = max(
+                0.0,
+                parent_agent.total_commission - (order.parent_commission or 0)
+            )
+
+    grandparent_agent = None
+    if order.grandparent_agent_id:
+        grandparent_agent = db.query(Agent).filter(Agent.id == order.grandparent_agent_id).first()
+        if grandparent_agent:
+            grandparent_agent.total_commission = max(
+                0.0,
+                grandparent_agent.total_commission - (order.grandparent_commission or 0)
+            )
+
+    # 2. Update costing amounts
+    order.paper_amount = float(costing_data.paper_amount or 0)
+    order.plate_amount = float(costing_data.plate_amount or 0)
+    order.printing_amount = float(costing_data.printing_amount or 0)
+    order.lamination_amount = float(costing_data.lamination_amount or 0)
+    order.binding_amount = float(costing_data.binding_amount or 0)
+
+    # Recalculate totals
+    requirement_total_amount = (
+        order.paper_amount
+        + order.plate_amount
+        + order.printing_amount
+        + order.lamination_amount
+        + order.binding_amount
+    )
+    order.requirement_total_amount = requirement_total_amount
+    order.total_amount = requirement_total_amount
+    order.printing_cost = requirement_total_amount
+
+    if order.quantity > 0:
+        order.unit_price = requirement_total_amount / order.quantity
+    else:
+        order.unit_price = 0
+
+    # 3. Recalculate commission
+    commission = calculate_commission(
+        printing_cost=order.printing_cost,
+        has_parent=parent_agent is not None,
+        has_grandparent=grandparent_agent is not None,
+    )
+
+    # Update order commissions
+    order.direct_agent_commission = commission["total_direct_commission"]
+    order.parent_commission = commission["parent_commission"]
+    order.grandparent_commission = commission["grandparent_commission"]
+    order.final_direct_agent_commission = commission["final_direct_agent_commission"]
+
+    # 4. Add new commission to Agent totals
+    if direct_agent:
+        direct_agent.total_commission += order.final_direct_agent_commission
+        direct_agent.printing_revenue += order.printing_cost
+
+    if parent_agent:
+        parent_agent.total_commission += order.parent_commission
+
+    if grandparent_agent:
+        grandparent_agent.total_commission += order.grandparent_commission
+
+    # 5. Create or update payment records
+    payment_extra_count = 0
+
+    if direct_agent:
+        created = update_or_create_commission_payment(
+            db=db,
+            order=order,
+            agent=direct_agent,
+            agent_role="Direct Member",
+            commission_amount=order.final_direct_agent_commission,
+            extra_count=payment_extra_count,
+        )
+        if created:
+            payment_extra_count += 1
+
+    if parent_agent:
+        created = update_or_create_commission_payment(
+            db=db,
+            order=order,
+            agent=parent_agent,
+            agent_role="Parent Member",
+            commission_amount=order.parent_commission,
+            extra_count=payment_extra_count,
+        )
+        if created:
+            payment_extra_count += 1
+
+    if grandparent_agent:
+        created = update_or_create_commission_payment(
+            db=db,
+            order=order,
+            agent=grandparent_agent,
+            agent_role="Grandparent Member",
+            commission_amount=order.grandparent_commission,
+            extra_count=payment_extra_count,
+        )
+        if created:
+            payment_extra_count += 1
+
+    # 6. Auto-mark any corresponding notifications for this order as read
+    db.query(Notification).filter(
+        Notification.order_id == order.id,
+        Notification.is_read == False
+    ).update({Notification.is_read: True}, synchronize_session=False)
+
+    db.commit()
+    db.refresh(order)
+
+    return order
+
+
+@router.put(
+    "/{order_id}/quantity",
+    response_model=OrderResponse,
+    dependencies=[Depends(require_roles(["super_admin"]))],
+)
+def update_order_quantity(
+    order_id: int,
+    quantity: int = Body(..., embed=True),
+    db: Session = Depends(get_db),
+):
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found",
+        )
+
+    if quantity <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Quantity must be greater than 0",
+        )
+
+    order.quantity = quantity
+    if quantity > 0:
+        order.unit_price = (order.requirement_total_amount or 0) / quantity
+    else:
+        order.unit_price = 0
+
+    db.commit()
+    db.refresh(order)
+    return order
+
+

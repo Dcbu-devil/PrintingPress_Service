@@ -1,7 +1,18 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, ForeignKey ,Boolean
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+
+
+# ============================================================
+# NOTE ON DATE FIELDS
+# ============================================================
+# Date fields in all models below use Column(String) to store
+# dates as strings (e.g. "2025-01-15").
+#
+# TODO: Migrate to Column(DateTime) or Column(Date) for proper
+# date validation, sorting, and SQL date functions.
+# This migration will require Alembic.
 
 
 # ============================================================
@@ -81,9 +92,14 @@ class User(Base):
     created_date = Column(String)
     last_login = Column(String)
 
+    #Reset Password
+    must_reset_password = Column(Boolean, default=False, nullable=False)
+
     # Relationships
     role = relationship("Role")
     agent = relationship("Agent", foreign_keys=[agent_id])
+
+    
 
 
 # ============================================================
@@ -137,6 +153,7 @@ class Agent(Base):
     # Self relationship for parent-child hierarchy.
     # This allows us to find parent member details.
     parent = relationship("Agent", remote_side=[id])
+
 
 
 # ============================================================
@@ -372,3 +389,30 @@ class CommissionPayment(Base):
     # Relationships
     order = relationship("Order", foreign_keys=[order_db_id])
     agent = relationship("Agent", foreign_keys=[agent_id])
+
+
+# ============================================================
+# NOTIFICATION MODEL
+# ============================================================
+# Purpose:
+# This table stores notifications for users.
+#
+# Examples:
+# - Costing requests from agents to super admin/admin
+#
+# If user_id is NULL, notification is for all super_admins/admins.
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    title = Column(String, nullable=False)
+    message = Column(String, nullable=False)
+    is_read = Column(Boolean, default=False, nullable=False)
+    created_date = Column(String)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
+
+    # Relationships
+    order = relationship("Order", foreign_keys=[order_id])
+    user = relationship("User", foreign_keys=[user_id])

@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Agent
+from app.models import Agent, User, Role, Order, CommissionPayment
 from app.schemas import AgentCreate, AgentUpdate, AgentResponse
-from app.auth import require_roles
+from app.auth import require_roles, get_password_hash, get_current_user
+from app.utils import generate_temp_password
 
 
 # ============================================================
@@ -19,20 +20,14 @@ from app.auth import require_roles
 # Backend model/table name:
 # Agent
 #
-# Main responsibilities:
-# 1. Get all members
-# 2. Create member
-# 3. Get member hierarchy/tree
-# 4. Get single member
-# 5. Update member
-# 6. Delete member
+# When Admin/Super Admin creates a member,
+# backend automatically creates login user:
 #
-# Permission rules:
-# 1. super_admin and admin can view members.
-# 2. super_admin and admin can create members.
-# 3. super_admin and admin can update members.
-# 4. only super_admin can delete members.
-# 5. super_admin and admin can view hierarchy tree.
+# Login email = member email
+# First password = password
+# Role = agent
+# must_reset_password = True
+# agent_id = newly created member id
 
 router = APIRouter(
     prefix="/api/agents",
@@ -43,37 +38,27 @@ router = APIRouter(
 # ============================================================
 # HELPER: GENERATE SEQUENTIAL MEMBER CODE
 # ============================================================
-# Purpose:
-# Generates member codes like:
-#
-# AG001
-# AG002
-# AG003
-#
-# Current MVP:
-# Uses last database ID to generate next code.
-#
-# Later production improvement:
-# Use database sequence or UUID to avoid duplicate issues
-# when many users create members at the same time.
 
-def generate_agent_code(
-    db: Session,
-):
+def generate_agent_code(db: Session):
     last_agent = db.query(Agent).order_by(Agent.id.desc()).first()
 
-    if not last_agent:
+    if not last_agent or not last_agent.code:
         return "AG001"
 
-    next_number = last_agent.id + 1
+    # Extract numeric part from last code for reliable sequencing
+    # even if agents have been deleted and IDs have gaps.
+    try:
+        last_num = int(last_agent.code.replace("AG", ""))
+        next_number = last_num + 1
+    except ValueError:
+        next_number = last_agent.id + 1
+
     new_code = f"AG{next_number:03d}"
 
-    existing_code = db.query(Agent).filter(Agent.code == new_code).first()
-
-    while existing_code:
+    # Ensure uniqueness
+    while db.query(Agent).filter(Agent.code == new_code).first():
         next_number += 1
         new_code = f"AG{next_number:03d}"
-        existing_code = db.query(Agent).filter(Agent.code == new_code).first()
 
     return new_code
 
@@ -81,15 +66,6 @@ def generate_agent_code(
 # ============================================================
 # HELPER: CHECK CIRCULAR HIERARCHY
 # ============================================================
-# Purpose:
-# Prevents invalid member hierarchy.
-#
-# Example invalid case:
-# Ravi is parent of Sibu.
-# Then Ravi cannot set Sibu as his own parent.
-#
-# Why needed:
-# Without this check, network tree can become broken/infinite loop.
 
 def is_circular_parent(
     db: Session,
@@ -117,21 +93,75 @@ def is_circular_parent(
 
 
 # ============================================================
+# HELPER: GET OR CREATE AGENT ROLE
+# ============================================================
+
+def get_or_create_agent_role(db: Session):
+    agent_role = (
+        db.query(Role)
+        .filter(Role.name == "agent")
+        .first()
+    )
+
+    if agent_role:
+        return agent_role
+
+    agent_role = Role(
+        name="agent",
+        description="Member / sales person",
+    )
+
+    db.add(agent_role)
+    db.flush()
+
+    return agent_role
+
+
+# ============================================================
+# HELPER: AUTO CREATE LOGIN USER FOR MEMBER / AGENT
+# ============================================================
+
+def create_login_user_for_agent(
+    db: Session,
+    agent: Agent,
+    temp_password: str,
+):
+    existing_user = (
+        db.query(User)
+        .filter(User.email == agent.email)
+        .first()
+    )
+
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Login user already exists with this email",
+        )
+
+    agent_role = get_or_create_agent_role(db)
+
+    new_user = User(
+        name=agent.name,
+        email=agent.email,
+        hashed_password=get_password_hash(temp_password),
+        role_id=agent_role.id,
+        agent_id=agent.id,
+        status="Active",
+        must_reset_password=False,
+        created_date=agent.joined_date,
+    )
+
+    db.add(new_user)
+    db.flush()
+
+    return new_user
+
+
+# ============================================================
 # GET ALL AGENTS / MEMBERS
 # ============================================================
 # URL:
 # GET /api/agents/
-#
-# Permission:
-# super_admin, admin
-#
-# Purpose:
-# Returns all members in ascending order.
-#
-# Used by:
-# Members page
-# Add Job page
-# Dashboard page
 
 @router.get(
     "/",
@@ -152,47 +182,57 @@ def get_agents(
 # URL:
 # POST /api/agents/
 #
-# Permission:
-# super_admin, admin
-#
-# Purpose:
-# Creates a new member.
-#
 # Important:
-# Member code is generated automatically by backend.
-# Frontend does not need to send code.
+# This creates:
+# 1. Agent/member row
+# 2. Login user row
+#
+# Login:
+# Email = member email
+# First password = password
+# must_reset_password = True
 
 @router.post(
     "/",
-    response_model=AgentResponse,
     dependencies=[
-        Depends(require_roles(["super_admin", "admin"]))
+        Depends(require_roles(["super_admin", "admin", "agent"]))
     ],
 )
 def create_agent(
     agent_data: AgentCreate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # ========================================================
-    # CHECK DUPLICATE EMAIL
-    # ========================================================
-
-    existing_email = (
+    if current_user.role.name == "agent":
+        if not current_user.agent_id:
+            raise HTTPException(
+                status_code=400,
+                detail="User has no connected member profile",
+            )
+        agent_data.parent_agent_id = current_user.agent_id
+    existing_agent_email = (
         db.query(Agent)
         .filter(Agent.email == agent_data.email)
         .first()
     )
 
-    if existing_email:
+    if existing_agent_email:
         raise HTTPException(
             status_code=400,
             detail="Member email already exists",
         )
 
-    # ========================================================
-    # VALIDATE PARENT MEMBER
-    # ========================================================
-    # If parent_agent_id is provided, that parent must exist.
+    existing_user_email = (
+        db.query(User)
+        .filter(User.email == agent_data.email)
+        .first()
+    )
+
+    if existing_user_email:
+        raise HTTPException(
+            status_code=400,
+            detail="Login user already exists with this email",
+        )
 
     if agent_data.parent_agent_id:
         parent = (
@@ -207,49 +247,52 @@ def create_agent(
                 detail="Parent member not found",
             )
 
-    # ========================================================
-    # GENERATE MEMBER CODE
-    # ========================================================
-
     agent_code = generate_agent_code(db)
-
-    # Remove code from frontend payload if accidentally sent.
-    # Backend should control member code generation.
 
     agent_payload = agent_data.model_dump()
     agent_payload.pop("code", None)
 
-    # ========================================================
-    # CREATE MEMBER OBJECT
-    # ========================================================
+    temp_password = generate_temp_password()
 
-    agent = Agent(
-        code=agent_code,
-        **agent_payload,
-    )
+    try:
+        agent = Agent(
+            code=agent_code,
+            **agent_payload,
+        )
 
-    db.add(agent)
-    db.commit()
-    db.refresh(agent)
+        db.add(agent)
+        db.flush()
+        db.refresh(agent)
 
-    return agent
+        create_login_user_for_agent(
+            db=db,
+            agent=agent,
+            temp_password=temp_password,
+        )
+
+        db.commit()
+        db.refresh(agent)
+
+        return {
+            **AgentResponse.model_validate(agent).model_dump(),
+            "temp_password": temp_password,
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Member creation failed: {str(e)}",
+        )
 
 
 # ============================================================
 # HIERARCHY TREE
 # ============================================================
-# URL:
-# GET /api/agents/hierarchy/tree
-#
-# Permission:
-# super_admin, admin
-#
-# Purpose:
-# Returns members in parent-child tree format.
-#
-# Important:
-# Keep this route BEFORE /{agent_id}
-# Otherwise FastAPI may treat "hierarchy/tree" as agent_id.
 
 @router.get(
     "/hierarchy/tree",
@@ -263,11 +306,6 @@ def get_agent_hierarchy(
     agents = db.query(Agent).order_by(Agent.id.asc()).all()
 
     agent_map = {}
-
-    # ========================================================
-    # CREATE AGENT MAP
-    # ========================================================
-    # Convert each agent row into dictionary with children list.
 
     for agent in agents:
         agent_map[agent.id] = {
@@ -288,12 +326,6 @@ def get_agent_hierarchy(
 
     root_agents = []
 
-    # ========================================================
-    # BUILD TREE STRUCTURE
-    # ========================================================
-    # If an agent has parent, add it inside parent's children.
-    # Otherwise, add it as root member.
-
     for agent in agents:
         current_agent = agent_map[agent.id]
 
@@ -304,18 +336,65 @@ def get_agent_hierarchy(
 
     return root_agents
 
+# ============================================================
+# GET MY AGENT / MEMBER PROFILE
+# ============================================================
+# URL:
+# GET /api/agents/me
+#
+# Purpose:
+# Agent/member can view only own profile.
+
+@router.get(
+    "/me",
+    response_model=AgentResponse,
+)
+def get_my_agent_profile(
+    current_user: User = Depends(require_roles(["agent"])),
+    db: Session = Depends(get_db),
+):
+    if not current_user.agent_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Agent profile not found",
+        )
+
+    agent = (
+        db.query(Agent)
+        .filter(Agent.id == current_user.agent_id)
+        .first()
+    )
+
+    if not agent:
+        raise HTTPException(
+            status_code=404,
+            detail="Agent profile not found",
+        )
+
+    return agent
+
+
+@router.get(
+    "/subagents",
+    response_model=list[AgentResponse],
+)
+def get_my_subagents(
+    current_user: User = Depends(require_roles(["agent"])),
+    db: Session = Depends(get_db),
+):
+    if not current_user.agent_id:
+        return []
+    return (
+        db.query(Agent)
+        .filter(Agent.parent_agent_id == current_user.agent_id)
+        .order_by(Agent.id.asc())
+        .all()
+    )
+
 
 # ============================================================
 # GET SINGLE AGENT / MEMBER
 # ============================================================
-# URL:
-# GET /api/agents/{agent_id}
-#
-# Permission:
-# super_admin, admin
-#
-# Purpose:
-# Returns one member by database ID.
 
 @router.get(
     "/{agent_id}",
@@ -346,21 +425,6 @@ def get_agent(
 # ============================================================
 # UPDATE AGENT / MEMBER
 # ============================================================
-# URL:
-# PUT /api/agents/{agent_id}
-#
-# Permission:
-# super_admin, admin
-#
-# Purpose:
-# Updates member details.
-#
-# Safety validations:
-# 1. Member must exist.
-# 2. Email cannot be used by another member.
-# 3. Member cannot be parent of itself.
-# 4. Parent member must exist.
-# 5. Circular hierarchy is blocked.
 
 @router.put(
     "/{agent_id}",
@@ -374,10 +438,6 @@ def update_agent(
     agent_data: AgentUpdate,
     db: Session = Depends(get_db),
 ):
-    # ========================================================
-    # FIND MEMBER
-    # ========================================================
-
     agent = (
         db.query(Agent)
         .filter(Agent.id == agent_id)
@@ -390,11 +450,7 @@ def update_agent(
             detail="Member not found",
         )
 
-    # ========================================================
-    # CHECK DUPLICATE EMAIL
-    # ========================================================
-
-    existing_email = (
+    existing_agent_email = (
         db.query(Agent)
         .filter(
             Agent.email == agent_data.email,
@@ -403,18 +459,33 @@ def update_agent(
         .first()
     )
 
-    if existing_email:
+    if existing_agent_email:
         raise HTTPException(
             status_code=400,
             detail="Another member already uses this email",
         )
 
-    # ========================================================
-    # VALIDATE PARENT MEMBER
-    # ========================================================
+    linked_user = (
+        db.query(User)
+        .filter(User.agent_id == agent_id)
+        .first()
+    )
+
+    existing_user_email = (
+        db.query(User)
+        .filter(User.email == agent_data.email)
+        .first()
+    )
+
+    if existing_user_email and (
+        not linked_user or existing_user_email.id != linked_user.id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Another login user already uses this email",
+        )
 
     if agent_data.parent_agent_id:
-        # Member cannot become parent of itself.
         if agent_data.parent_agent_id == agent_id:
             raise HTTPException(
                 status_code=400,
@@ -433,7 +504,6 @@ def update_agent(
                 detail="Parent member not found",
             )
 
-        # Prevent circular hierarchy.
         if is_circular_parent(
             db=db,
             agent_id=agent_id,
@@ -444,10 +514,6 @@ def update_agent(
                 detail="Invalid hierarchy. This parent selection creates circular network.",
             )
 
-    # ========================================================
-    # UPDATE MEMBER FIELDS
-    # ========================================================
-
     agent.name = agent_data.name
     agent.email = agent_data.email
     agent.phone = agent_data.phone
@@ -455,6 +521,11 @@ def update_agent(
     agent.parent_agent_id = agent_data.parent_agent_id
     agent.status = agent_data.status
     agent.joined_date = agent_data.joined_date
+
+    if linked_user:
+        linked_user.name = agent_data.name
+        linked_user.email = agent_data.email
+        linked_user.status = agent_data.status
 
     db.commit()
     db.refresh(agent)
@@ -465,21 +536,6 @@ def update_agent(
 # ============================================================
 # DELETE AGENT / MEMBER
 # ============================================================
-# URL:
-# DELETE /api/agents/{agent_id}
-#
-# Permission:
-# super_admin only
-#
-# Purpose:
-# Deletes a member.
-#
-# Safety rule:
-# A member cannot be deleted if child members are connected.
-#
-# Example:
-# If Ravi has Sibu as child member,
-# Ravi cannot be deleted until Sibu is moved/deleted.
 
 @router.delete(
     "/{agent_id}",
@@ -503,11 +559,6 @@ def delete_agent(
             detail="Member not found",
         )
 
-    # ========================================================
-    # CHECK CHILD MEMBERS
-    # ========================================================
-    # Do not allow delete if this member has child members.
-
     child_count = (
         db.query(Agent)
         .filter(Agent.parent_agent_id == agent_id)
@@ -520,10 +571,45 @@ def delete_agent(
             detail="Cannot delete this member because connected child members exist. First change or delete child members.",
         )
 
+    # Check for orders referencing this agent
+    order_count = (
+        db.query(Order)
+        .filter(Order.direct_agent_id == agent_id)
+        .count()
+    )
+
+    if order_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete this member because {order_count} job(s) are assigned to them.",
+        )
+
+    # Check for commission payments referencing this agent
+    payment_count = (
+        db.query(CommissionPayment)
+        .filter(CommissionPayment.agent_id == agent_id)
+        .count()
+    )
+
+    if payment_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete this member because {payment_count} commission payment(s) reference them.",
+        )
+
+    linked_user = (
+        db.query(User)
+        .filter(User.agent_id == agent_id)
+        .first()
+    )
+
+    if linked_user:
+        db.delete(linked_user)
+
     db.delete(agent)
     db.commit()
 
     return {
-        "message": "Member deleted successfully",
+        "message": "Member and linked login user deleted successfully",
         "deleted_member_id": agent_id,
     }

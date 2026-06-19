@@ -2,7 +2,7 @@ from datetime import date
 
 from app.database import SessionLocal
 from app.models import User, Role
-from app.auth import hash_password
+from app.auth import get_password_hash
 
 
 def create_super_admin():
@@ -16,7 +16,7 @@ def create_super_admin():
         )
 
         if not super_admin_role:
-            print("❌ super_admin role not found. Please insert roles first.")
+            print("ERROR: super_admin role not found. Please insert roles first.")
             return
 
         existing_user = (
@@ -26,17 +26,18 @@ def create_super_admin():
         )
 
         if existing_user:
-            print("✅ Super Admin already exists.")
+            print("OK: Super Admin already exists.")
             print("Email: super@admin.com")
             return
 
         super_admin = User(
             name="Super Admin",
             email="super@admin.com",
-            hashed_password=hash_password("admin123"),
+            hashed_password=get_password_hash("admin123"),
             role_id=super_admin_role.id,
             agent_id=None,
             status="Active",
+            must_reset_password=False,
             created_date=str(date.today()),
             last_login=None,
         )
@@ -44,13 +45,13 @@ def create_super_admin():
         db.add(super_admin)
         db.commit()
 
-        print("✅ Super Admin created successfully.")
+        print("SUCCESS: Super Admin created successfully.")
         print("Email: super@admin.com")
         print("Password: admin123")
 
     except Exception as error:
         db.rollback()
-        print("❌ Error creating Super Admin:", error)
+        print("ERROR creating Super Admin:", error)
 
     finally:
         db.close()
