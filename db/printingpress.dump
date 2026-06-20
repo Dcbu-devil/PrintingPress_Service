@@ -1,0 +1,744 @@
+--
+-- PostgreSQL database dump
+--
+
+\restrict LTadghypEFq1wfO916DOUC8e9GtRqQ8r9k20fbXZsQUcepNTosZmpkBelZJMvcd
+
+-- Dumped from database version 18.4
+-- Dumped by pg_dump version 18.4
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: agents; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.agents (
+    id integer NOT NULL,
+    code character varying,
+    name character varying NOT NULL,
+    email character varying,
+    phone character varying,
+    address character varying,
+    parent_agent_id integer,
+    total_orders integer,
+    total_commission double precision,
+    printing_revenue double precision,
+    status character varying,
+    joined_date character varying
+);
+
+
+ALTER TABLE public.agents OWNER TO postgres;
+
+--
+-- Name: agents_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.agents_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.agents_id_seq OWNER TO postgres;
+
+--
+-- Name: agents_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.agents_id_seq OWNED BY public.agents.id;
+
+
+--
+-- Name: audit_logs; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.audit_logs (
+    id integer NOT NULL,
+    user_id integer,
+    action character varying(100) NOT NULL,
+    entity_type character varying(100) NOT NULL,
+    entity_id integer,
+    old_values json,
+    new_values json,
+    ip_address character varying(50),
+    created_at timestamp without time zone NOT NULL
+);
+
+
+ALTER TABLE public.audit_logs OWNER TO postgres;
+
+--
+-- Name: audit_logs_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.audit_logs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.audit_logs_id_seq OWNER TO postgres;
+
+--
+-- Name: audit_logs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.audit_logs_id_seq OWNED BY public.audit_logs.id;
+
+
+--
+-- Name: commission_payments; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.commission_payments (
+    id integer NOT NULL,
+    payment_id character varying,
+    order_db_id integer NOT NULL,
+    order_id character varying NOT NULL,
+    agent_id integer NOT NULL,
+    agent_name character varying NOT NULL,
+    agent_role character varying NOT NULL,
+    commission_amount double precision,
+    paid_amount double precision,
+    pending_amount double precision,
+    payment_status character varying,
+    payment_date character varying,
+    payment_method character varying,
+    created_date character varying,
+    updated_date character varying
+);
+
+
+ALTER TABLE public.commission_payments OWNER TO postgres;
+
+--
+-- Name: commission_payments_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.commission_payments_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.commission_payments_id_seq OWNER TO postgres;
+
+--
+-- Name: commission_payments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.commission_payments_id_seq OWNED BY public.commission_payments.id;
+
+
+--
+-- Name: notifications; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.notifications (
+    id integer NOT NULL,
+    user_id integer,
+    title character varying NOT NULL,
+    message character varying NOT NULL,
+    is_read boolean NOT NULL,
+    created_date character varying,
+    order_id integer
+);
+
+
+ALTER TABLE public.notifications OWNER TO postgres;
+
+--
+-- Name: notifications_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.notifications_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.notifications_id_seq OWNER TO postgres;
+
+--
+-- Name: notifications_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.notifications_id_seq OWNED BY public.notifications.id;
+
+
+--
+-- Name: orders; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.orders (
+    id integer NOT NULL,
+    order_id character varying,
+    customer_name character varying NOT NULL,
+    product_name character varying NOT NULL,
+    quantity integer NOT NULL,
+    unit_price double precision NOT NULL,
+    total_amount double precision NOT NULL,
+    printing_cost double precision NOT NULL,
+    direct_agent_id integer NOT NULL,
+    parent_agent_id integer,
+    grandparent_agent_id integer,
+    direct_agent_commission double precision,
+    parent_commission double precision,
+    grandparent_commission double precision,
+    final_direct_agent_commission double precision,
+    status character varying,
+    delivery_date character varying,
+    created_date character varying,
+    paper_type character varying,
+    paper_amount double precision DEFAULT 0,
+    plate_type character varying,
+    plate_amount double precision DEFAULT 0,
+    printing_type character varying,
+    printing_amount double precision DEFAULT 0,
+    lamination_type character varying,
+    lamination_amount double precision DEFAULT 0,
+    binding_type character varying,
+    binding_amount double precision DEFAULT 0,
+    requirement_total_amount double precision DEFAULT 0,
+    agent_paid_amount double precision DEFAULT 0,
+    payment_status character varying DEFAULT 'Pending'::character varying,
+    payment_date character varying,
+    payment_method character varying
+);
+
+
+ALTER TABLE public.orders OWNER TO postgres;
+
+--
+-- Name: orders_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.orders_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.orders_id_seq OWNER TO postgres;
+
+--
+-- Name: orders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.orders_id_seq OWNED BY public.orders.id;
+
+
+--
+-- Name: roles; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.roles (
+    id integer NOT NULL,
+    name character varying NOT NULL,
+    description character varying
+);
+
+
+ALTER TABLE public.roles OWNER TO postgres;
+
+--
+-- Name: roles_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.roles_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.roles_id_seq OWNER TO postgres;
+
+--
+-- Name: roles_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.roles_id_seq OWNED BY public.roles.id;
+
+
+--
+-- Name: users; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.users (
+    id integer NOT NULL,
+    name character varying NOT NULL,
+    email character varying NOT NULL,
+    hashed_password character varying NOT NULL,
+    role_id integer NOT NULL,
+    agent_id integer,
+    status character varying DEFAULT 'Active'::character varying,
+    created_date character varying,
+    last_login character varying,
+    must_reset_password boolean DEFAULT false NOT NULL
+);
+
+
+ALTER TABLE public.users OWNER TO postgres;
+
+--
+-- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.users_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.users_id_seq OWNER TO postgres;
+
+--
+-- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
+
+
+--
+-- Name: agents id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.agents ALTER COLUMN id SET DEFAULT nextval('public.agents_id_seq'::regclass);
+
+
+--
+-- Name: audit_logs id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.audit_logs ALTER COLUMN id SET DEFAULT nextval('public.audit_logs_id_seq'::regclass);
+
+
+--
+-- Name: commission_payments id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.commission_payments ALTER COLUMN id SET DEFAULT nextval('public.commission_payments_id_seq'::regclass);
+
+
+--
+-- Name: notifications id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.notifications ALTER COLUMN id SET DEFAULT nextval('public.notifications_id_seq'::regclass);
+
+
+--
+-- Name: orders id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.orders ALTER COLUMN id SET DEFAULT nextval('public.orders_id_seq'::regclass);
+
+
+--
+-- Name: roles id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.roles ALTER COLUMN id SET DEFAULT nextval('public.roles_id_seq'::regclass);
+
+
+--
+-- Name: users id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_id_seq'::regclass);
+
+
+--
+-- Data for Name: agents; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.agents (id, code, name, email, phone, address, parent_agent_id, total_orders, total_commission, printing_revenue, status, joined_date) FROM stdin;
+14	AG004	prb	gulugulu@hehe.com	84123687	skdjbc.wek	13	0	0	0	Active	2026-06-19
+12	AG002	devil	devil@eed.com	7418529630	sddessdfdx	11	1	202.83999999999997	1958	Active	2026-06-19
+13	AG003	bibhu	bib@hyguys.com	7539514682	sjhdvb,asmbvas	12	1	311.36	3366	Active	2026-06-19
+11	AG001	Satyajit Singh	bfebf@gmail.com	6325412585	kjdb	\N	2	391.39	3731.76	Active	2026-06-19
+15	AG005	biswajit singh	alskdnnak@gmail.com	skndlka	ssaj d	\N	0	0	0	Active	2026-06-20
+\.
+
+
+--
+-- Data for Name: audit_logs; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.audit_logs (id, user_id, action, entity_type, entity_id, old_values, new_values, ip_address, created_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: commission_payments; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.commission_payments (id, payment_id, order_db_id, order_id, agent_id, agent_name, agent_role, commission_amount, paid_amount, pending_amount, payment_status, payment_date, payment_method, created_date, updated_date) FROM stdin;
+12	PAY-1004	8	ORD-1003	13	bibhu	Direct Member	311.36	0	311.36	Pending	\N	\N	2026-06-19	2026-06-19
+13	PAY-1005	8	ORD-1003	12	devil	Parent Member	16.83	0	16.83	Pending	\N	\N	2026-06-19	2026-06-19
+14	PAY-1006	8	ORD-1003	11	Satyajit Singh	Grandparent Member	8.42	0	8.42	Pending	\N	\N	2026-06-19	2026-06-19
+15	PAY-1007	9	ORD-1004	11	Satyajit Singh	Direct Member	136.5	0	136.5	Pending	\N	\N	2026-06-20	2026-06-20
+11	PAY-1003	7	ORD-1002	11	Satyajit Singh	Parent Member	9.79	0	9.79	Pending	\N	\N	2026-06-19	2026-06-20
+10	PAY-1002	7	ORD-1002	12	devil	Direct Member	186.01	0	186.01	Pending	\N	\N	2026-06-19	2026-06-20
+9	PAY-1001	6	ORD-1001	11	Satyajit Singh	Direct Member	236.68	0	236.68	Pending	\N	\N	2026-06-19	2026-06-20
+\.
+
+
+--
+-- Data for Name: notifications; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.notifications (id, user_id, title, message, is_read, created_date, order_id) FROM stdin;
+1	\N	New Costing Request	Agent Satyajit Singh created job ORD-1001 (ddf). Please enter costing.	t	2026-06-19	6
+2	\N	New Costing Request	Agent devil created job ORD-1002 (book). Please enter costing.	t	2026-06-19	7
+3	\N	New Costing Request	Agent bibhu created job ORD-1003 (sdnmmcxm). Please enter costing.	t	2026-06-19	8
+4	\N	New Costing Request	Agent Satyajit Singh created job ORD-1004 (banner). Please enter costing.	t	2026-06-20	9
+\.
+
+
+--
+-- Data for Name: orders; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.orders (id, order_id, customer_name, product_name, quantity, unit_price, total_amount, printing_cost, direct_agent_id, parent_agent_id, grandparent_agent_id, direct_agent_commission, parent_commission, grandparent_commission, final_direct_agent_commission, status, delivery_date, created_date, paper_type, paper_amount, plate_type, plate_amount, printing_type, printing_amount, lamination_type, lamination_amount, binding_type, binding_amount, requirement_total_amount, agent_paid_amount, payment_status, payment_date, payment_method) FROM stdin;
+6	ORD-1001	edc	ddf	100	23.667600000000004	2366.76	2366.76	11	\N	\N	236.68	0	0	236.68	Running	2026-07-10	2026-06-19	hg	100	dfj	200	tghn	754.9	hngxcvb	523	vbn	788.86	2366.76	0	Pending	\N	\N
+7	ORD-1002	edsw	book	20	97.9	1958	1958	12	11	\N	195.8	9.79	0	186.01	Running	2026-07-11	2026-06-19	edf	200	asd	400	wsa	800	efg	102	qwe	456	1958	0	Pending	\N	\N
+8	ORD-1003	wwessd	sdnmmcxm	500	6.732	3366	3366	13	12	11	336.6	16.83	8.42	311.36	Running	2026-07-07	2026-06-19	gds	744	mn	500	gdsmhvb	421	nbvnbv 	856	mnhvbmnv	845	3366	0	Pending	\N	\N
+9	ORD-1004	tbs.lim	banner	500	2.73	1365	1365	11	\N	\N	136.5	0	0	136.5	Pending	2026-06-24	2026-06-20	a4	250	cd	425	sd	566	def	46	sef	78	1365	0	Pending	\N	\N
+\.
+
+
+--
+-- Data for Name: roles; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.roles (id, name, description) FROM stdin;
+1	super_admin	Business owner with full access
+2	admin	Manager with operational access
+3	agent	Member or sales agent
+\.
+
+
+--
+-- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.users (id, name, email, hashed_password, role_id, agent_id, status, created_date, last_login, must_reset_password) FROM stdin;
+6	Super Admin	satyajitsinghbaban@gmail.com	$2b$12$Zu7UH8eHg1sTZod1kZHKj.mL.DFHzOZdHat0uRI0PodClpgGc9K4i	1	\N	Active	2026-06-18 15:28:16.444667	2026-06-19	f
+10	devil	devil@eed.com	$2b$12$qEgDj1CAgsbG8YJbtQ0kk.ll/oEwhG72lW8X6L..SVhrqJ0Eb3V1C	3	12	Active	2026-06-19	2026-06-19	f
+11	bibhu	bib@hyguys.com	$2b$12$JRGuDVRKajCLyF8pCOLAnutNFuBw9kUkjXcTNEYa3u1PLwW7548hS	3	13	Active	2026-06-19	2026-06-19	f
+12	prb	gulugulu@hehe.com	$2b$12$5Bwy5L1BG69KzgHb1qsicOLNwD0/QlzI4frXhFAFOpSXCxW17m.IK	3	14	Active	2026-06-19	\N	f
+7	Super Admin	super@admin.com	$2b$12$jIszUm0RKIZ5mLlK1FXpzOIAsz0X5JzdIcPJfTrJk2qrj3oCVofei	1	\N	Active	2026-06-19	2026-06-20	f
+9	Satyajit Singh	bfebf@gmail.com	$2b$12$eKDNl2qrxnGje04gRHJMF.RB588EyBFZRk7UMyPJiivTZY35B48Dy	3	11	Active	2026-06-19	2026-06-20	f
+13	Admin	admin@123.com	$2b$12$ck3IIxaRRkZvOUluIC5aF.uPXd3zERjvCWzfOP5Ay6WXygWDIq3Jy	2	\N	Active	2026-06-19	2026-06-20	f
+14	biswajit singh	alskdnnak@gmail.com	$2b$12$EkOG3mOl.IuUi.KD25buwO/4JGt24iIHczoK388U1ZNgH90TjvL6K	3	15	Active	2026-06-20	\N	f
+\.
+
+
+--
+-- Name: agents_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.agents_id_seq', 15, true);
+
+
+--
+-- Name: audit_logs_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.audit_logs_id_seq', 1, false);
+
+
+--
+-- Name: commission_payments_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.commission_payments_id_seq', 15, true);
+
+
+--
+-- Name: notifications_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.notifications_id_seq', 4, true);
+
+
+--
+-- Name: orders_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.orders_id_seq', 9, true);
+
+
+--
+-- Name: roles_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.roles_id_seq', 3, true);
+
+
+--
+-- Name: users_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.users_id_seq', 14, true);
+
+
+--
+-- Name: agents agents_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.agents
+    ADD CONSTRAINT agents_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: audit_logs audit_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.audit_logs
+    ADD CONSTRAINT audit_logs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: commission_payments commission_payments_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.commission_payments
+    ADD CONSTRAINT commission_payments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: notifications notifications_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: orders orders_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: roles roles_name_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.roles
+    ADD CONSTRAINT roles_name_key UNIQUE (name);
+
+
+--
+-- Name: roles roles_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.roles
+    ADD CONSTRAINT roles_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: users users_email_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_email_key UNIQUE (email);
+
+
+--
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: ix_agents_code; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX ix_agents_code ON public.agents USING btree (code);
+
+
+--
+-- Name: ix_agents_email; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX ix_agents_email ON public.agents USING btree (email);
+
+
+--
+-- Name: ix_agents_id; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX ix_agents_id ON public.agents USING btree (id);
+
+
+--
+-- Name: ix_agents_name; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX ix_agents_name ON public.agents USING btree (name);
+
+
+--
+-- Name: ix_commission_payments_id; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX ix_commission_payments_id ON public.commission_payments USING btree (id);
+
+
+--
+-- Name: ix_commission_payments_payment_id; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX ix_commission_payments_payment_id ON public.commission_payments USING btree (payment_id);
+
+
+--
+-- Name: ix_notifications_id; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX ix_notifications_id ON public.notifications USING btree (id);
+
+
+--
+-- Name: ix_orders_id; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX ix_orders_id ON public.orders USING btree (id);
+
+
+--
+-- Name: ix_orders_order_id; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX ix_orders_order_id ON public.orders USING btree (order_id);
+
+
+--
+-- Name: agents agents_parent_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.agents
+    ADD CONSTRAINT agents_parent_agent_id_fkey FOREIGN KEY (parent_agent_id) REFERENCES public.agents(id);
+
+
+--
+-- Name: commission_payments commission_payments_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.commission_payments
+    ADD CONSTRAINT commission_payments_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agents(id);
+
+
+--
+-- Name: commission_payments commission_payments_order_db_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.commission_payments
+    ADD CONSTRAINT commission_payments_order_db_id_fkey FOREIGN KEY (order_db_id) REFERENCES public.orders(id);
+
+
+--
+-- Name: notifications notifications_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id);
+
+
+--
+-- Name: notifications notifications_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: orders orders_direct_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_direct_agent_id_fkey FOREIGN KEY (direct_agent_id) REFERENCES public.agents(id);
+
+
+--
+-- Name: orders orders_grandparent_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_grandparent_agent_id_fkey FOREIGN KEY (grandparent_agent_id) REFERENCES public.agents(id);
+
+
+--
+-- Name: orders orders_parent_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_parent_agent_id_fkey FOREIGN KEY (parent_agent_id) REFERENCES public.agents(id);
+
+
+--
+-- Name: users users_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agents(id);
+
+
+--
+-- Name: users users_role_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.roles(id);
+
+
+--
+-- PostgreSQL database dump complete
+--
+
+\unrestrict LTadghypEFq1wfO916DOUC8e9GtRqQ8r9k20fbXZsQUcepNTosZmpkBelZJMvcd
+

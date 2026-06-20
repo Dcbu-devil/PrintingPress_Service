@@ -9,32 +9,32 @@ def create_super_admin():
     db = SessionLocal()
 
     try:
-        super_admin_role = (
+        admin_role = (
             db.query(Role)
-            .filter(Role.name == "super_admin")
+            .filter(Role.name == "admin")
             .first()
         )
 
-        if not super_admin_role:
+        if not admin_role:
             print("ERROR: super_admin role not found. Please insert roles first.")
             return
 
         existing_user = (
             db.query(User)
-            .filter(User.email == "super@admin.com")
+            .filter(User.email == "admin@123.com")
             .first()
         )
 
         if existing_user:
             print("OK: Super Admin already exists.")
-            print("Email: super@admin.com")
+            print("Email: admin@123.com")
             return
 
-        super_admin = User(
-            name="Super Admin",
-            email="super@admin.com",
-            hashed_password=get_password_hash("admin123"),
-            role_id=super_admin_role.id,
+        admin = User(
+            name="Admin",
+            email="admin@123.com",
+            hashed_password=get_password_hash("admin@23"),
+            role_id=admin_role.id,
             agent_id=None,
             status="Active",
             must_reset_password=False,
@@ -42,12 +42,12 @@ def create_super_admin():
             last_login=None,
         )
 
-        db.add(super_admin)
+        db.add(admin)
         db.commit()
 
-        print("SUCCESS: Super Admin created successfully.")
-        print("Email: super@admin.com")
-        print("Password: admin123")
+        print("SUCCESS: Admin created successfully.")
+        print("Email: admin@123.com")
+        print("Password: admin@23")
 
     except Exception as error:
         db.rollback()
